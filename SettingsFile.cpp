@@ -87,9 +87,22 @@ void CheckpointPlugin::writeSettingsFile() {
 9|
 9|Other options:
 8|
-9|Save File Name:
+9|Checkpoint Categories:
+)";
+	setFile << "6|Current Category|cpt_filename|" << getCategoryOptions() << "\n";
+	setFile << R"(12|New Category Name|cpt_new_category
 7|
-12||cpt_filename
+0|Create and Select Category|cpt_create_category
+9|
+0|Delete Current Category|cpt_delete_category
+7|
+1|Move shots to Default and enable category deletion|cpt_allow_delete_category
+9|
+9|Move Current Checkpoint:
+)";
+	setFile << "6|Destination Category|cpt_move_category|" << getCategoryOptions(false) << "\n";
+	setFile << R"(0|Move Current Checkpoint|cpt_move_checkpoint
+9|
 0|Delete ALL Shots (even locked shots; not undo-able!)|cpt_delete_all
 7|
 1|Enable Delete ALL Shots Button|cpt_allow_delete_all

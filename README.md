@@ -33,6 +33,8 @@ Note: assumes default bindings from above.
 1. Start freeplay mode.  Set up a shot.
 2. Enter rewind mode by pressing the right thumb stick.
 3. Steer left/right to rewind/advance time.
+   - While selecting a checkpoint, an on-screen panel shows the current mode and
+     a quick reference using your configured controller bindings.
 4. When you find a point in time to save, press the Back (or Select or Share) button.
 5. Resume driving.
 6. Press Back again to return to that checkpoint.
@@ -86,8 +88,19 @@ Note: assumes default bindings from above.
 - **Auto-reset checkpoint**:
   - Allows drilling a shot or running through shots like a training pack.
 - **Other Options**:
-  - **Save File Name**:
-    - Sets the checkpoint save file; store different types of shots in different files.
+  - **Checkpoint Categories**:
+    - Select a category to load its saved shots. New checkpoints are saved to the
+      currently selected category.
+    - **All** is a read-only combined view of every checkpoint in every category.
+      Select a specific category before saving, deleting, or changing a lock.
+    - Enter a category name and click **Create and Select Category** to create an
+      independent checkpoint file.
+    - Enable category deletion and click **Delete Current Category** to move all
+      of its checkpoints to **Default**, then remove the category.
+    - Select a destination and click **Move Current Checkpoint** to move the
+      currently selected shot, including its locked state, into another category.
+    - The existing `cpt_filename` value remains compatible when upgrading.
+    - The active category is displayed beside the current checkpoint number.
   - **Boost when loading checkpoint**:
     - **Saved at checkpoint** restores the boost amount captured with the checkpoint.
     - **Unlimited** keeps boost full while playing from the checkpoint.

@@ -64,6 +64,9 @@ class CheckpointPlugin : public BakkesMod::Plugin::BakkesModPlugin {
 	void randCheckpoint(std::vector<std::string> command);
 	void pasteShot(std::vector<std::string> command);
 	void freezeBallUnfreezeCar(std::vector<std::string> command);
+	void createCategory(std::vector<std::string> command);
+	void deleteCategory(std::vector<std::string> command);
+	void moveCheckpointToCategory(std::vector<std::string> command);
 	virtual void onUnload();
 	void doCheckpoint(std::vector<std::string> command);
 	void lockCheckpoint(std::vector<std::string> command);
@@ -76,6 +79,8 @@ private:
 	GameState latest;
 	std::vector<GameState> checkpoints;
 	std::vector<bool> locks;
+	std::vector<std::string> checkpointFiles;
+	std::vector<size_t> checkpointFileIndices;
 	size_t curCheckpoint = 0;
 	bool rewindMode = false;
 	bool freezeBall = false;
@@ -120,6 +125,18 @@ private:
 	bool rewind(ServerWrapper sw);
 	void loadCheckpointFile();
 	void saveCheckpointFile();
+	bool readCheckpointFile(
+		const std::filesystem::path& path,
+		std::vector<GameState>& savedCheckpoints,
+		std::vector<bool>& savedLocks) const;
+	bool writeCheckpointFile(
+		const std::filesystem::path& path,
+		const std::vector<GameState>& savedCheckpoints,
+		const std::vector<bool>& savedLocks) const;
+	std::set<std::string> getCategoryFilenames() const;
+	std::string getCategoryName() const;
+	std::string getCategoryOptions(bool includeAll = true) const;
+	bool isAllCategory() const;
 	void Render(CanvasWrapper canvas);
 	void record(ServerWrapper sw);
 	void loadLatestCheckpoint();

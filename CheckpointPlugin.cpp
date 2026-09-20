@@ -19,6 +19,49 @@
 using namespace std::placeholders;
 
 std::string_view DEFAULT_SAVE_FILE_NAME = "freeplaycheckpoint.data";
+std::string_view CATEGORY_FILE_PREFIX = "freeplaycheckpoint_";
+std::string_view ALL_CATEGORIES_VALUE = "__all__";
+
+std::string categoryNameFromFilename(const std::string& value) {
+	if (value == ALL_CATEGORIES_VALUE) {
+		return "All";
+	}
+	const std::filesystem::path filename = std::filesystem::path(value).filename();
+	if (filename.string() == DEFAULT_SAVE_FILE_NAME) {
+		return "Default";
+	}
+
+	std::string category = filename.stem().string();
+	const std::string prefix = CATEGORY_FILE_PREFIX.data();
+	if (category.rfind(prefix, 0) == 0) {
+		category.erase(0, prefix.size());
+	}
+	return category.empty() ? "Default" : category;
+}
+
+std::string friendlyKeyName(std::string key) {
+	const std::string prefix = "XboxTypeS_";
+	if (key.rfind(prefix, 0) == 0) {
+		key.erase(0, prefix.size());
+	}
+	if (key == "RightThumbStick") {
+		return "Right Stick";
+	}
+	if (key == "LeftThumbStick") {
+		return "Left Stick";
+	}
+	if (key.rfind("DPad_", 0) == 0) {
+		key.replace(0, 5, "D-Pad ");
+	}
+	if (key == "RightShoulder") {
+		return "Right Bumper";
+	}
+	if (key == "LeftShoulder") {
+		return "Left Bumper";
+	}
+	std::replace(key.begin(), key.end(), '_', ' ');
+	return key;
+}
 
 BAKKESMOD_PLUGIN(CheckpointPlugin, "Freeplay Checkpoint", plugin_version, PLUGINTYPE_FREEPLAY)
 
@@ -172,9 +215,19 @@ void CheckpointPlugin::onLoad()
 	filenameCV.addOnValueChanged([this](std::string old, CVarWrapper now) {
 		setFrozen(false, false);
 		curCheckpoint = 0;
+		hasQuickCheckpoint = false;
+		playingFromCheckpoint = false;
+		checkpointBoostActive = false;
 		loadCheckpointFile();
 	});
-	snapshotIntervalCV.notify();
+	filenameCV.notify();
+
+	cvarManager->registerCvar("cpt_new_category", "", "Name for a new checkpoint category", true, false, 0, false, 0, false);
+	cvarManager->registerNotifier("cpt_create_category", std::bind(&CheckpointPlugin::createCategory, this, _1), "Creates and selects a checkpoint category", PERMISSION_ALL);
+	cvarManager->registerCvar("cpt_allow_delete_category", "0", "Enables the delete category button", false, true, 0, true, 1, false);
+	cvarManager->registerNotifier("cpt_delete_category", std::bind(&CheckpointPlugin::deleteCategory, this, _1), "Moves the current category to Default and deletes it", PERMISSION_ALL);
+	cvarManager->registerCvar("cpt_move_category", static_cast<std::string>(DEFAULT_SAVE_FILE_NAME), "Category to move the current checkpoint to", true, false, 0, false, 0, true);
+	cvarManager->registerNotifier("cpt_move_checkpoint", std::bind(&CheckpointPlugin::moveCheckpointToCategory, this, _1), "Moves the current checkpoint to another category", PERMISSION_ALL);
 
 	auto resetDelayCV = cvarManager->registerCvar(
 		"cpt_load_after_reset", "0", "Load last checkpoint on reset if loaded within last N seconds", true, true, 0, false, 0, true);
@@ -391,10 +444,204 @@ void CheckpointPlugin::deleteAllCheckpoints(std::vector<std::string> command) {
 		return;
 	}
 	cvarManager->getCvar("cpt_allow_delete_all").setValue("0");
+	if (isAllCategory()) {
+		const std::vector<GameState> emptyCheckpoints;
+		const std::vector<bool> emptyLocks;
+		bool failed = false;
+		for (const auto& filename : getCategoryFilenames()) {
+			if (!writeCheckpointFile(gameWrapper->GetDataFolder() / filename, emptyCheckpoints, emptyLocks)) {
+				cvarManager->log("Could not delete checkpoints from category " + categoryNameFromFilename(filename) + ".");
+				failed = true;
+			}
+		}
+		loadCheckpointFile();
+		curCheckpoint = 0;
+		if (failed) {
+			cvarManager->log("Some categories could not be cleared.");
+		}
+		return;
+	}
 	checkpoints.resize(0);
 	locks.resize(0);
+	checkpointFiles.resize(0);
+	checkpointFileIndices.resize(0);
 	curCheckpoint = 0;
 	saveCheckpointFile();
+}
+
+void CheckpointPlugin::createCategory(std::vector<std::string> command) {
+	std::string name = cvarManager->getCvar("cpt_new_category").getStringValue();
+	const auto first = name.find_first_not_of(" \t");
+	const auto last = name.find_last_not_of(" \t");
+	if (first == std::string::npos) {
+		cvarManager->log("Category name cannot be empty.");
+		return;
+	}
+	name = name.substr(first, last - first + 1);
+	if (name.size() > 64 ||
+		!std::all_of(name.begin(), name.end(), [](unsigned char c) {
+			return std::isalnum(c) || c == ' ' || c == '-' || c == '_';
+		})) {
+		cvarManager->log("Category names may contain up to 64 letters, numbers, spaces, hyphens, and underscores.");
+		return;
+	}
+	if (_stricmp(name.c_str(), "All") == 0 || _stricmp(name.c_str(), "Default") == 0) {
+		cvarManager->log("All and Default are reserved category names.");
+		return;
+	}
+
+	const std::string filename = std::string(CATEGORY_FILE_PREFIX) + name + ".data";
+	const auto categoryPath = gameWrapper->GetDataFolder() / filename;
+	if (std::filesystem::exists(categoryPath)) {
+		cvarManager->log("Category already exists; selecting " + name + ".");
+		cvarManager->getCvar("cpt_filename").setValue(filename);
+		return;
+	}
+
+	cvarManager->getCvar("cpt_filename").setValue(filename);
+	saveCheckpointFile();
+	if (!std::filesystem::exists(categoryPath)) {
+		cvarManager->log("Failed to create checkpoint category " + name + ".");
+		return;
+	}
+	cvarManager->getCvar("cpt_new_category").setValue("");
+	writeSettingsFile();
+	cvarManager->log("Created checkpoint category " + name + ".");
+}
+
+void CheckpointPlugin::deleteCategory(std::vector<std::string> command) {
+	if (!cvarManager->getCvar("cpt_allow_delete_category").getBoolValue()) {
+		return;
+	}
+	cvarManager->getCvar("cpt_allow_delete_category").setValue("0");
+
+	const std::string sourceValue = cvarManager->getCvar("cpt_filename").getStringValue();
+	const std::string sourceFilename = std::filesystem::path(sourceValue).filename().string();
+	if (sourceValue == ALL_CATEGORIES_VALUE) {
+		cvarManager->log("The All category is a combined view and cannot be deleted.");
+		return;
+	}
+	if (sourceFilename == DEFAULT_SAVE_FILE_NAME) {
+		cvarManager->log("The Default category cannot be deleted.");
+		return;
+	}
+
+	const auto sourcePath = gameWrapper->GetDataFolder() / sourceValue;
+	const auto defaultPath = gameWrapper->GetDataFolder() / std::string(DEFAULT_SAVE_FILE_NAME);
+	std::vector<GameState> sourceCheckpoints;
+	std::vector<bool> sourceLocks;
+	if (!std::filesystem::exists(sourcePath) ||
+		!readCheckpointFile(sourcePath, sourceCheckpoints, sourceLocks)) {
+		cvarManager->log("Could not load the category to delete.");
+		return;
+	}
+	std::vector<GameState> defaultCheckpoints;
+	std::vector<bool> defaultLocks;
+	if (std::filesystem::exists(defaultPath) &&
+		!readCheckpointFile(defaultPath, defaultCheckpoints, defaultLocks)) {
+		cvarManager->log("Could not load the Default category.");
+		return;
+	}
+	const auto originalDefaultCheckpoints = defaultCheckpoints;
+	const auto originalDefaultLocks = defaultLocks;
+	defaultLocks.resize(defaultCheckpoints.size(), false);
+	for (size_t i = 0; i < sourceCheckpoints.size(); i++) {
+		defaultCheckpoints.push_back(sourceCheckpoints[i]);
+		defaultLocks.push_back(sourceLocks.size() > i && sourceLocks[i]);
+	}
+	if (!writeCheckpointFile(defaultPath, defaultCheckpoints, defaultLocks)) {
+		cvarManager->log("Could not move the category checkpoints to Default.");
+		return;
+	}
+
+	std::error_code error;
+	if (!std::filesystem::remove(sourcePath, error) || error) {
+		if (!writeCheckpointFile(defaultPath, originalDefaultCheckpoints, originalDefaultLocks)) {
+			cvarManager->log("Could not delete the category or roll back Default; checkpoints may be duplicated.");
+		} else {
+			cvarManager->log("Could not delete the category; moving its checkpoints was rolled back.");
+		}
+		return;
+	}
+
+	if (cvarManager->getCvar("cpt_move_category").getStringValue() == sourceFilename) {
+		cvarManager->getCvar("cpt_move_category").setValue(static_cast<std::string>(DEFAULT_SAVE_FILE_NAME));
+	}
+	cvarManager->getCvar("cpt_filename").setValue(static_cast<std::string>(DEFAULT_SAVE_FILE_NAME));
+	writeSettingsFile();
+	cvarManager->log("Deleted category " + categoryNameFromFilename(sourceFilename) + " and moved its checkpoints to Default.");
+}
+
+void CheckpointPlugin::moveCheckpointToCategory(std::vector<std::string> command) {
+	if (checkpoints.empty() || curCheckpoint >= checkpoints.size()) {
+		cvarManager->log("There is no checkpoint to move.");
+		return;
+	}
+
+	const std::string sourceFilename = checkpointFiles[curCheckpoint];
+	const size_t sourceIndex = checkpointFileIndices[curCheckpoint];
+	const std::string destinationFilename =
+		std::filesystem::path(cvarManager->getCvar("cpt_move_category").getStringValue()).filename().string();
+	if (destinationFilename.empty() || destinationFilename == sourceFilename) {
+		cvarManager->log("Select a different destination category.");
+		return;
+	}
+
+	const auto sourcePath = gameWrapper->GetDataFolder() / sourceFilename;
+	const auto destinationPath = gameWrapper->GetDataFolder() / destinationFilename;
+	if (cvarManager->getCvar("cpt_move_category").getStringValue() == ALL_CATEGORIES_VALUE ||
+		(!std::filesystem::exists(destinationPath) && destinationFilename != DEFAULT_SAVE_FILE_NAME)) {
+		cvarManager->log("The destination category does not exist.");
+		return;
+	}
+
+	std::vector<GameState> sourceCheckpoints;
+	std::vector<bool> sourceLocks;
+	std::vector<GameState> destinationCheckpoints;
+	std::vector<bool> destinationLocks;
+	if (!readCheckpointFile(sourcePath, sourceCheckpoints, sourceLocks) ||
+		sourceIndex >= sourceCheckpoints.size()) {
+		cvarManager->log("Could not load the checkpoint's source category.");
+		return;
+	}
+	if (std::filesystem::exists(destinationPath) &&
+		!readCheckpointFile(destinationPath, destinationCheckpoints, destinationLocks)) {
+		cvarManager->log("Could not load the destination category.");
+		return;
+	}
+
+	const GameState movedCheckpoint = sourceCheckpoints[sourceIndex];
+	const bool movedLock = sourceLocks.size() > sourceIndex && sourceLocks[sourceIndex];
+	const auto originalDestinationCheckpoints = destinationCheckpoints;
+	const auto originalDestinationLocks = destinationLocks;
+	destinationCheckpoints.push_back(movedCheckpoint);
+	destinationLocks.resize(destinationCheckpoints.size(), false);
+	destinationLocks.back() = movedLock;
+	if (!writeCheckpointFile(destinationPath, destinationCheckpoints, destinationLocks)) {
+		cvarManager->log("Could not save the checkpoint to the destination category.");
+		return;
+	}
+
+	sourceCheckpoints.erase(sourceCheckpoints.begin() + sourceIndex);
+	if (sourceLocks.size() > sourceIndex) {
+		sourceLocks.erase(sourceLocks.begin() + sourceIndex);
+	}
+	if (!writeCheckpointFile(sourcePath, sourceCheckpoints, sourceLocks)) {
+		if (writeCheckpointFile(destinationPath, originalDestinationCheckpoints, originalDestinationLocks)) {
+			cvarManager->log("Could not update the current category; the move was rolled back.");
+		} else {
+			cvarManager->log("Could not update the current category or roll back the destination; the checkpoint may exist in both categories.");
+		}
+		return;
+	}
+
+	loadCheckpointFile();
+	curCheckpoint = checkpoints.empty() ? 0 : std::min(curCheckpoint, checkpoints.size() - 1);
+	rewindState.atCheckpoint = false;
+	rewindState.deleting = false;
+	hasQuickCheckpoint = false;
+	setFrozen(false, false);
+	cvarManager->log("Moved checkpoint to category " + categoryNameFromFilename(destinationFilename) + ".");
 }
 
 void CheckpointPlugin::randCheckpoint(std::vector<std::string> command) {
@@ -441,6 +688,10 @@ void CheckpointPlugin::lockCheckpoint(std::vector<std::string> command) {
 	if (gameWrapper->IsPaused() || !rewindMode || !rewindState.atCheckpoint) {
 		return;
 	}
+	if (isAllCategory()) {
+		cvarManager->log("Select a specific category before changing checkpoint locks.");
+		return;
+	}
 	rewindState.deleting = false;
 	if (locks.size() <= curCheckpoint) {
 		locks.resize(curCheckpoint + 1);
@@ -460,12 +711,18 @@ void CheckpointPlugin::doCheckpoint(std::vector<std::string> command) {
 			return;
 		}
 		if (gameWrapper->IsInReplay()) {
+			if (isAllCategory()) {
+				cvarManager->log("Select a specific category before saving a checkpoint.");
+				return;
+			}
 			std::unique_ptr<GameState> gs = getReplayGameState();
 			if (gs == nullptr) {
 				return;
 			}
 			cvarManager->log("adding checkpoint " + std::to_string(checkpoints.size() + 1));
 			checkpoints.push_back(*gs);
+			checkpointFiles.push_back(std::filesystem::path(cvarManager->getCvar("cpt_filename").getStringValue()).filename().string());
+			checkpointFileIndices.push_back(checkpoints.size() - 1);
 			saveCheckpointFile();
 			return;
 		}
@@ -486,6 +743,10 @@ void CheckpointPlugin::doCheckpoint(std::vector<std::string> command) {
 		}
 		hasQuickCheckpoint = false;
 		if (rewindState.atCheckpoint) { // Delete the current checkpoint we are at.
+			if (isAllCategory()) {
+				cvarManager->log("Select a specific category before deleting a checkpoint.");
+				return;
+			}
 			if (locks.size() > curCheckpoint && locks[curCheckpoint]) {
 				log("at cpt but locked: " + std::to_string(curCheckpoint + 1));
 				return;
@@ -500,6 +761,11 @@ void CheckpointPlugin::doCheckpoint(std::vector<std::string> command) {
 			if (locks.size() > curCheckpoint) {
 				locks.erase(locks.begin() + curCheckpoint);
 			}
+			checkpointFiles.erase(checkpointFiles.begin() + curCheckpoint);
+			checkpointFileIndices.erase(checkpointFileIndices.begin() + curCheckpoint);
+			for (size_t i = 0; i < checkpointFileIndices.size(); i++) {
+				checkpointFileIndices[i] = i;
+			}
 			curCheckpoint = std::min(curCheckpoint, checkpoints.size() - 1);
 			rewindState.atCheckpoint = false;
 			rewindState.justDeletedCheckpoint = true;
@@ -507,9 +773,15 @@ void CheckpointPlugin::doCheckpoint(std::vector<std::string> command) {
 			return;
 		}
 		// Add a new checkpoint here.
+		if (isAllCategory()) {
+			cvarManager->log("Select a specific category before saving a checkpoint.");
+			return;
+		}
 		log("adding checkpoint " + std::to_string(checkpoints.size() + 1));
 		curCheckpoint = checkpoints.size();
 		checkpoints.push_back(latest);
+		checkpointFiles.push_back(std::filesystem::path(cvarManager->getCvar("cpt_filename").getStringValue()).filename().string());
+		checkpointFileIndices.push_back(curCheckpoint);
 		saveCheckpointFile();
 		loadGameState(latest);
 		rewindState.atCheckpoint = true;
@@ -795,7 +1067,12 @@ void show(CanvasWrapper canvas, Vector2 *loc, std::string s) {
 }
 
 void CheckpointPlugin::Render(CanvasWrapper canvas) {
-	if (!enabled()) {
+	if (!gameWrapper->IsInFreeplay()) {
+		return;
+	}
+	ServerWrapper sw = gameWrapper->GetGameEventAsServer();
+	if (sw.IsNull() ||
+		PlaylistIds(sw.GetPlaylist().GetPlaylistId()) == PlaylistIds::Workshop) {
 		return;
 	}
 	if (debug) {
@@ -817,8 +1094,58 @@ void CheckpointPlugin::Render(CanvasWrapper canvas) {
 	if (!rewindMode) {
 		return;
 	}
+	auto keyName = [this](const std::string& cvar) {
+		return friendlyKeyName(cvarManager->getCvar(cvar).getStringValue());
+	};
+	const std::string checkpointKey = keyName("cpt_do_checkpoint_key");
+	std::vector<std::pair<std::string, float>> controls = {
+		{ "CHECKPOINT SAVING", 1.75f },
+		{ "Steer Left / Right: Rewind / Fast Forward", 1.25f },
+		{ checkpointKey + ": Save New Checkpoint", 1.25f },
+		{ checkpointKey + " twice: Delete Current Checkpoint", 1.25f },
+	};
+	if (isAllCategory()) {
+		controls.push_back({ "All Categories is read-only", 1.25f });
+	}
+	controls.push_back({ "", 0.75f });
+	controls.push_back({ "CHECKPOINT REPLAYING", 1.75f });
+	controls.push_back({
+		keyName("cpt_prev_checkpoint_key") + " / " +
+		keyName("cpt_next_checkpoint_key") + ": Previous / Next Checkpoint",
+		1.25f
+	});
+	controls.push_back({ keyName("cpt_freeze_ball_key") + ": Unfreeze Car / Freeze Ball", 1.25f });
+	controls.push_back({ keyName("cpt_mirror_state_key") + ": Mirror Shot", 1.25f });
+	controls.push_back({ "Throttle / Jump / Boost: Replay Selected State", 1.25f });
+
+	float panelWidth = 0;
+	float panelHeight = 16;
+	for (const auto& control : controls) {
+		const Vector2F size = canvas.GetStringSize(control.first, control.second, control.second);
+		panelWidth = std::max(panelWidth, size.X);
+		panelHeight += size.Y + 4;
+	}
+	const auto screenSize = canvas.GetSize();
+	Vector2 panelPosition = {
+		static_cast<int>(screenSize.X * 0.04),
+		static_cast<int>(screenSize.Y * (debug ? 0.42 : 0.22))
+	};
+	canvas.SetPosition(panelPosition);
+	canvas.SetColor(0, 0, 0, static_cast<char>(150));
+	canvas.FillBox(Vector2{
+		static_cast<int>(panelWidth + 24),
+		static_cast<int>(panelHeight + 8)
+	});
+	Vector2 textPosition = panelPosition + Vector2{ 12, 10 };
+	for (const auto& control : controls) {
+		canvas.SetPosition(textPosition);
+		canvas.SetColor('\xff', '\xff', '\xff', '\xdc');
+		canvas.DrawString(control.first, control.second, control.second);
+		textPosition.Y += static_cast<int>(
+			canvas.GetStringSize(control.first, control.second, control.second).Y + 4);
+	}
+
 	if (rewindState.deleting) {
-		auto screenSize = canvas.GetSize();
 		Vector2 loc = { (int)(screenSize.X * 0.80), (int)(screenSize.Y * 0.08) };
 		loc.X = int(screenSize.X * .70);
 		canvas.SetPosition(loc);
@@ -827,7 +1154,6 @@ void CheckpointPlugin::Render(CanvasWrapper canvas) {
 		return;
 	}
 	if (rewindState.justDeletedCheckpoint) {
-		auto screenSize = canvas.GetSize();
 		Vector2 loc = { (int)(screenSize.X * 0.80), (int)(screenSize.Y * 0.08) };
 		loc.X = int(screenSize.X * .70);
 		canvas.SetPosition(loc);
@@ -836,67 +1162,223 @@ void CheckpointPlugin::Render(CanvasWrapper canvas) {
 		return;
 	}
 	if (rewindState.atCheckpoint) {
-		auto screenSize = canvas.GetSize();
 		std::string l = "";
 		if (locks.size() > curCheckpoint && locks[curCheckpoint]) {
 			l = " (L)";
 		}
-		Vector2 loc = { (int)(screenSize.X * 0.80), (int)(screenSize.Y * 0.08) };
+		const std::string checkpointLabel = getCategoryName() + ": " +
+			std::to_string(curCheckpoint + 1) + " | " +
+			std::to_string(checkpoints.size()) + l;
+		const Vector2F labelSize = canvas.GetStringSize(checkpointLabel, 6, 6);
+		Vector2 loc = {
+			std::max(10, static_cast<int>(screenSize.X - labelSize.X - 20)),
+			static_cast<int>(screenSize.Y * 0.08)
+		};
 		canvas.SetPosition(loc + Vector2{ 5,5 });
 		canvas.SetColor(0, 0, 0, 100);
-		canvas.DrawString(std::to_string(curCheckpoint + 1) +
-			" | " +
-			std::to_string(checkpoints.size()) + l, 6, 6);
+		canvas.DrawString(checkpointLabel, 6, 6);
 		canvas.SetPosition(loc);
 		canvas.SetColor('\xff', '\xff', '\xff', '\xdc');
-		canvas.DrawString(std::to_string(curCheckpoint + 1) +
-			" | " +
-			std::to_string(checkpoints.size()) + l, 6, 6);
+		canvas.DrawString(checkpointLabel, 6, 6);
 	}
 }
 
 // Prevent loading an unknown version's save file.
 constexpr uint32_t SAVE_FILE_VERSION = 1;
 
+std::string CheckpointPlugin::getCategoryName() const {
+	if (isAllCategory() && curCheckpoint < checkpointFiles.size()) {
+		return categoryNameFromFilename(checkpointFiles[curCheckpoint]);
+	}
+	return categoryNameFromFilename(cvarManager->getCvar("cpt_filename").getStringValue());
+}
+
+std::set<std::string> CheckpointPlugin::getCategoryFilenames() const {
+	const std::string selectedFilename =
+		std::filesystem::path(cvarManager->getCvar("cpt_filename").getStringValue()).filename().string();
+	std::set<std::string> filenames = { std::string(DEFAULT_SAVE_FILE_NAME) };
+	if (!selectedFilename.empty() && selectedFilename != ALL_CATEGORIES_VALUE) {
+		filenames.insert(selectedFilename);
+	}
+
+	const auto dataFolder = gameWrapper->GetDataFolder();
+	std::error_code error;
+	if (std::filesystem::exists(dataFolder, error)) {
+		for (std::filesystem::directory_iterator entry(dataFolder, error), end;
+			entry != end && !error; entry.increment(error)) {
+			if (!entry->is_regular_file(error)) {
+				continue;
+			}
+			const std::string filename = entry->path().filename().string();
+			if (entry->path().extension() == ".data" &&
+				filename.rfind(CATEGORY_FILE_PREFIX.data(), 0) == 0) {
+				filenames.insert(filename);
+			}
+		}
+	}
+	if (error) {
+		cvarManager->log("Could not list checkpoint categories: " + error.message());
+	}
+	return filenames;
+}
+
+std::string CheckpointPlugin::getCategoryOptions(bool includeAll) const {
+	std::string options;
+	if (includeAll) {
+		options = "All@" + std::string(ALL_CATEGORIES_VALUE);
+	}
+	for (const auto& filename : getCategoryFilenames()) {
+		if (filename.find_first_of("@&|\r\n") != std::string::npos) {
+			continue;
+		}
+		if (!options.empty()) {
+			options += "&";
+		}
+		options += categoryNameFromFilename(filename) + "@" + filename;
+	}
+	return options;
+}
+
+bool CheckpointPlugin::isAllCategory() const {
+	return cvarManager->getCvar("cpt_filename").getStringValue() == ALL_CATEGORIES_VALUE;
+}
+
 void CheckpointPlugin::loadCheckpointFile() {
 	checkpoints.clear();
 	locks.clear();
-	std::ifstream in(gameWrapper->GetDataFolder() / cvarManager->getCvar("cpt_filename").getStringValue(), std::ios::binary);
-	uint32_t version;
-	readPOD(in, version);
-	if (version != SAVE_FILE_VERSION) {
-		in.close();
-		log("could not load save file with version " + std::to_string(version));
+	checkpointFiles.clear();
+	checkpointFileIndices.clear();
+	if (isAllCategory()) {
+		for (const auto& filename : getCategoryFilenames()) {
+			const auto path = gameWrapper->GetDataFolder() / filename;
+			if (!std::filesystem::exists(path)) {
+				continue;
+			}
+			std::vector<GameState> categoryCheckpoints;
+			std::vector<bool> categoryLocks;
+			if (!readCheckpointFile(path, categoryCheckpoints, categoryLocks)) {
+				cvarManager->log("Could not load checkpoint category " + categoryNameFromFilename(filename) + ".");
+				continue;
+			}
+			for (size_t i = 0; i < categoryCheckpoints.size(); i++) {
+				checkpoints.push_back(categoryCheckpoints[i]);
+				locks.push_back(categoryLocks.size() > i && categoryLocks[i]);
+				checkpointFiles.push_back(filename);
+				checkpointFileIndices.push_back(i);
+			}
+		}
 		return;
 	}
-	int32_t numSaves;
+
+	const std::string filename =
+		std::filesystem::path(cvarManager->getCvar("cpt_filename").getStringValue()).filename().string();
+	const auto path = gameWrapper->GetDataFolder() / cvarManager->getCvar("cpt_filename").getStringValue();
+	if (!std::filesystem::exists(path)) {
+		log("save file does not exist yet");
+		return;
+	}
+	if (!readCheckpointFile(path, checkpoints, locks)) {
+		cvarManager->log("Could not load checkpoint category " + getCategoryName() + ".");
+		return;
+	}
+	for (size_t i = 0; i < checkpoints.size(); i++) {
+		checkpointFiles.push_back(filename);
+		checkpointFileIndices.push_back(i);
+	}
+}
+
+bool CheckpointPlugin::readCheckpointFile(
+	const std::filesystem::path& path,
+	std::vector<GameState>& savedCheckpoints,
+	std::vector<bool>& savedLocks) const {
+	std::ifstream in(path, std::ios::binary);
+	if (!in) {
+		return false;
+	}
+
+	uint32_t version = 0;
+	readPOD(in, version);
+	if (version != SAVE_FILE_VERSION) {
+		return false;
+	}
+	int32_t numSaves = 0;
 	readPOD(in, numSaves);
+	if (!in || numSaves < 0 || numSaves > 100000) {
+		return false;
+	}
+	std::vector<GameState> loadedCheckpoints;
+	loadedCheckpoints.reserve(numSaves);
 	for (int32_t i = 0; i < numSaves; i++) {
-		checkpoints.emplace_back(in);
+		loadedCheckpoints.emplace_back(in);
+		if (!in) {
+			return false;
+		}
 	}
 	int32_t numLocks = 0; // older save files did not have this data; initialize to 0.
 	readPOD(in, numLocks);
-	for (int32_t i = 0; i < numLocks; i++) {
-		bool locked;
-		readPOD(in, locked);
-		locks.push_back(locked);
+	if (in.eof()) {
+		in.clear();
+		numLocks = 0;
+	} else if (!in || numLocks < 0 || numLocks > numSaves) {
+		return false;
 	}
-	in.close();
+	std::vector<bool> loadedLocks;
+	loadedLocks.reserve(numLocks);
+	for (int32_t i = 0; i < numLocks; i++) {
+		bool locked = false;
+		readPOD(in, locked);
+		if (!in) {
+			return false;
+		}
+		loadedLocks.push_back(locked);
+	}
+	savedCheckpoints = std::move(loadedCheckpoints);
+	savedLocks = std::move(loadedLocks);
+	return true;
 }
 
 void CheckpointPlugin::saveCheckpointFile() {
-	std::ofstream out(gameWrapper->GetDataFolder() / cvarManager->getCvar("cpt_filename").getStringValue(), std::ios::binary | std::ios::out | std::ios::trunc);
+	const auto path = gameWrapper->GetDataFolder() / cvarManager->getCvar("cpt_filename").getStringValue();
+	if (!writeCheckpointFile(path, checkpoints, locks)) {
+		cvarManager->log("Could not save checkpoint category " + getCategoryName() + ".");
+	}
+}
+
+bool CheckpointPlugin::writeCheckpointFile(
+	const std::filesystem::path& path,
+	const std::vector<GameState>& savedCheckpoints,
+	const std::vector<bool>& savedLocks) const {
+	std::filesystem::path temporaryPath = path;
+	temporaryPath += ".tmp";
+	std::ofstream out(temporaryPath, std::ios::binary | std::ios::out | std::ios::trunc);
+	if (!out) {
+		return false;
+	}
 	auto ver = SAVE_FILE_VERSION;
 	writePOD(out, ver);
-	auto size = int32_t(checkpoints.size());
+	auto size = int32_t(savedCheckpoints.size());
 	writePOD(out, size);
-	for (auto& fav : checkpoints) {
+	for (const auto& fav : savedCheckpoints) {
 		fav.write(out);
 	}
-	size = int32_t(locks.size());
+	size = int32_t(savedLocks.size());
 	writePOD(out, size);
-	for (bool l : locks) {
+	for (bool l : savedLocks) {
 		writePOD(out, l);
 	}
 	out.close();
+	if (!out.good()) {
+		std::error_code error;
+		std::filesystem::remove(temporaryPath, error);
+		return false;
+	}
+	if (!MoveFileExW(
+		temporaryPath.c_str(),
+		path.c_str(),
+		MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
+		std::error_code error;
+		std::filesystem::remove(temporaryPath, error);
+		return false;
+	}
+	return true;
 }
