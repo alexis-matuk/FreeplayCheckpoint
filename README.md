@@ -2,6 +2,29 @@
 ### Rewind, Save, and Restore Checkpoints in Freeplay, Replays, and Custom Training!
 <p align="center"><img src="banner.png" width="350"></p>
 
+## Enhancements in This Version
+
+This version extends the original Freeplay Checkpoint implementation with:
+
+- **Checkpoint boost modes**:
+  - Restore the boost amount saved with the checkpoint.
+  - Keep unlimited boost while replaying a checkpoint.
+  - Start each replay with a custom boost percentage.
+- **Checkpoint categories**:
+  - Create and select named categories backed by separate checkpoint files.
+  - Move individual checkpoints between categories while preserving their lock state.
+  - Delete a category while safely moving all of its checkpoints to **Default**.
+  - Browse and replay every saved checkpoint through the virtual, read-only **All**
+    category.
+- **Improved Freeplay overlays**:
+  - Display the source category and current checkpoint counter without overflowing
+    the screen.
+  - Show separate **Checkpoint Saving** and **Checkpoint Replaying** control references
+    using the configured controller bindings.
+  - Keep checkpoint overlays hidden outside standard Freeplay.
+- **Simplified local development**:
+  - Build, install, and reload the plugin using the included `build.ps1` script.
+
 **Setup:**
 
 1. Open bakkesmod window (F2 by default)
