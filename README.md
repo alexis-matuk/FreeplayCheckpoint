@@ -15,6 +15,17 @@ Reference section below) as desired in the "Bindings" tab.
 
 It is recommended to disable goal scoring in bakkesmod while using this plugin.
 
+**Building and Installing:**
+
+From PowerShell in the repository root, run:
+
+```powershell
+.\build.ps1
+```
+
+The script builds the Release x64 plugin and runs the project's BakkesMod post-build
+patcher, which installs and reloads the plugin.
+
 **Basic Usage:**
 
 Note: assumes default bindings from above.
@@ -77,6 +88,10 @@ Note: assumes default bindings from above.
 - **Other Options**:
   - **Save File Name**:
     - Sets the checkpoint save file; store different types of shots in different files.
+  - **Boost when loading checkpoint**:
+    - **Saved at checkpoint** restores the boost amount captured with the checkpoint.
+    - **Unlimited** keeps boost full while playing from the checkpoint.
+    - **Custom amount** restores the selected boost percentage each time the checkpoint loads.
   - **Delete ALL Shots**:
     - Deletes every saved checkpoint in the current file, even locked shots.  Check the
       "Enable" checkbox first to enable the button - there is no warning or confirmation

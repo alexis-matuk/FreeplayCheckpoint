@@ -49,6 +49,12 @@ struct RewindState {
 	int buttonsDown = 0x7f;
 };
 
+enum class CheckpointBoostMode {
+	Saved,
+	Unlimited,
+	Custom,
+};
+
 class CheckpointPlugin : public BakkesMod::Plugin::BakkesModPlugin {
 	//Boilerplate
 	virtual void onLoad();
@@ -81,6 +87,7 @@ private:
 	std::vector<GameState> gameHistory;
 	int carNum = 0;
 	bool playingFromCheckpoint = false;
+	bool checkpointBoostActive = false;
 
 	// Settings:
 	bool deleteFutureHistory = false;
@@ -97,6 +104,8 @@ private:
 	bool mirrorLoads = false;
 	bool randomizeLoads = false;
 	bool showBoost = false;
+	CheckpointBoostMode checkpointBoostMode = CheckpointBoostMode::Saved;
+	int customBoostPercent = 100;
 
 	void addBind(std::string key, std::string cmd);
 	void removeBind(std::string key, std::string cmd);
@@ -116,7 +125,9 @@ private:
 	void loadLatestCheckpoint();
 	void loadCurCheckpoint();
 	void loadRandomCheckpoint();
-	void loadGameState(const GameState&);
+	void loadGameState(const GameState&, bool useCheckpointBoost = true);
+	void applyCheckpointBoost(GameState& state) const;
+	void replenishCheckpointBoost(ServerWrapper sw) const;
 	void log(std::string s);
 	void boolvar(std::string name, std::string desc, bool* var);
 	std::unique_ptr<GameState> getReplayGameState();

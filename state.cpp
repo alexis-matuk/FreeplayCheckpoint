@@ -155,7 +155,7 @@ void CarState::write(std::ostream& out) const {
 void CarState::apply(CarWrapper c, bool showBoost) const {
 	actorState.apply(c);
 	if (!c.GetBoostComponent().IsNull()) {
-		c.GetBoostComponent().SetCurrentBoostAmount(boostAmount);
+		c.GetBoostComponent().SetBoostAmount(boostAmount);
 	}
 	c.SetbDoubleJumped(!hasDodge);
 	c.SetbJumped(!hasDodge);

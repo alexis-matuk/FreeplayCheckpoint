@@ -108,6 +108,27 @@ void CheckpointPlugin::onLoad()
 	boolvar("cpt_disable_workshop", "If set, disable in workshop", &disableWorkshop);
 	boolvar("cpt_show_boost", "If set, show player boost usage while rewinding", &showBoost);
 
+	auto boostModeCV = cvarManager->registerCvar(
+		"cpt_checkpoint_boost", "saved", "Boost amount used when loading a checkpoint", true);
+	boostModeCV.addOnValueChanged([this](std::string old, CVarWrapper now) {
+		const std::string mode = now.getStringValue();
+		if (mode == "unlimited") {
+			checkpointBoostMode = CheckpointBoostMode::Unlimited;
+		} else if (mode == "custom") {
+			checkpointBoostMode = CheckpointBoostMode::Custom;
+		} else {
+			checkpointBoostMode = CheckpointBoostMode::Saved;
+		}
+	});
+	boostModeCV.notify();
+
+	auto customBoostCV = cvarManager->registerCvar(
+		"cpt_checkpoint_boost_custom", "100", "Custom boost percentage used when loading a checkpoint", true, true, 0, true, 100, true);
+	customBoostCV.addOnValueChanged([this](std::string old, CVarWrapper now) {
+		customBoostPercent = now.getIntValue();
+	});
+	customBoostCV.notify();
+
 	// Migration from cpt_next_prev_when_frozen to split variables.
 	if (ignorePNNotFrozen) {
 		cvarManager->getCvar("cpt_next_prev_when_frozen").setValue(false);
@@ -183,6 +204,7 @@ void CheckpointPlugin::onLoad()
 				}
 			}
 			playingFromCheckpoint = false;
+			checkpointBoostActive = false;
 			setFrozen(false, false);
 			dodgeExpiration = 0.0;
 		});
@@ -201,7 +223,7 @@ void CheckpointPlugin::onLoad()
 			return;
 		}
 		latest = history.back();
-		loadGameState(latest);
+		loadGameState(latest, false);
 	}, "Activates rewind mode", PERMISSION_ALL);
 
 	// If in play mode, load the latest checkpoint / quick checkpoint.
@@ -543,8 +565,12 @@ void CheckpointPlugin::loadCurCheckpoint() {
 	rewindState.atCheckpoint = true;
 }
 
-void CheckpointPlugin::loadGameState(const GameState& state) {
+void CheckpointPlugin::loadGameState(const GameState& state, bool useCheckpointBoost) {
 	latest = state;
+	checkpointBoostActive = useCheckpointBoost;
+	if (useCheckpointBoost) {
+		applyCheckpointBoost(latest);
+	}
 	ServerWrapper sw = gameWrapper->GetGameEventAsServer();
 	if (cvarManager->getCvar("sv_soccar_enablegoal").getBoolValue()) {
 		sw.PlayerResetTraining(); // In case a goal was just scored, there may be no ball.
@@ -562,6 +588,33 @@ void CheckpointPlugin::loadGameState(const GameState& state) {
 	playingFromCheckpoint = true; // not playing yet but must resume eventually.
 }
 
+void CheckpointPlugin::applyCheckpointBoost(GameState& state) const {
+	switch (checkpointBoostMode) {
+	case CheckpointBoostMode::Unlimited:
+		state.car.boostAmount = 1.0f;
+		break;
+	case CheckpointBoostMode::Custom:
+		state.car.boostAmount = std::clamp(customBoostPercent / 100.0f, 0.0f, 1.0f);
+		break;
+	case CheckpointBoostMode::Saved:
+		break;
+	}
+}
+
+void CheckpointPlugin::replenishCheckpointBoost(ServerWrapper sw) const {
+	if (!checkpointBoostActive || checkpointBoostMode != CheckpointBoostMode::Unlimited) {
+		return;
+	}
+	auto car = sw.GetGameCar();
+	if (car.IsNull()) {
+		return;
+	}
+	auto boost = car.GetBoostComponent();
+	if (!boost.IsNull()) {
+		boost.SetBoostAmount(1.0f);
+	}
+}
+
 void CheckpointPlugin::OnPreAsync(std::string funcName)
 {
 	if (!gameWrapper->IsInFreeplay() && !gameWrapper->IsInCustomTraining()) {
@@ -571,6 +624,8 @@ void CheckpointPlugin::OnPreAsync(std::string funcName)
 	if (sw.GetBall().IsNull() || sw.GetGameCar().IsNull()) {
 		return;
 	}
+
+	replenishCheckpointBoost(sw);
 
 	if (rewindMode) {
 		if (rewind(sw)) {
@@ -615,6 +670,12 @@ bool CheckpointPlugin::rewind(ServerWrapper sw) {
 				log("quick checkpoint taken");
 				hasQuickCheckpoint = true;
 				quickCheckpoint = latest;
+				checkpointBoostActive = true;
+				applyCheckpointBoost(latest);
+				auto boost = sw.GetGameCar().GetBoostComponent();
+				if (!boost.IsNull()) {
+					boost.SetBoostAmount(latest.car.boostAmount);
+				}
 				if (deleteFutureHistory) {
 					size_t current = std::clamp<size_t>(
 						history.size() - 1 + size_t(ceil(rewindState.virtualTimeOffset / snapshotInterval)),
