@@ -9,6 +9,7 @@
 #include "pch.h"
 #include "CheckpointPlugin.h"
 
+#include "bakkesmod/wrappers/GameEvent/ReplayWrapper.h"
 #include "bakkesmod/wrappers/GameEvent/TutorialWrapper.h"
 #include "bakkesmod/wrappers/GameObject/CarComponent/BoostWrapper.h"
 #include "bakkesmod/wrappers/GameObject/CarWrapper.h"
@@ -45,19 +46,28 @@ std::string friendlyKeyName(std::string key) {
 		key.erase(0, prefix.size());
 	}
 	if (key == "RightThumbStick") {
-		return "Right Stick";
+		return "Right Stick (R3)";
 	}
 	if (key == "LeftThumbStick") {
-		return "Left Stick";
+		return "Left Stick (L3)";
+	}
+	if (key == "Back") {
+		return "Back / Select / Share";
 	}
 	if (key.rfind("DPad_", 0) == 0) {
 		key.replace(0, 5, "D-Pad ");
 	}
 	if (key == "RightShoulder") {
-		return "Right Bumper";
+		return "Right Bumper (R1)";
 	}
 	if (key == "LeftShoulder") {
-		return "Left Bumper";
+		return "Left Bumper (L1)";
+	}
+	if (key == "RightTrigger") {
+		return "Right Trigger (R2)";
+	}
+	if (key == "LeftTrigger") {
+		return "Left Trigger (L2)";
 	}
 	std::replace(key.begin(), key.end(), '_', ' ');
 	return key;
@@ -129,6 +139,9 @@ std::unique_ptr<GameState> CheckpointPlugin::getReplayGameState() {
 void CheckpointPlugin::setFrozen(bool car, bool ball) {
 	rewindMode = car;
 	freezeBall = ball;
+	if (!car) {
+		selectionMode = CheckpointSelectionMode::None;
+	}
 	cvarManager->getCvar("cpt_car_frozen").setValue(car);
 	cvarManager->getCvar("cpt_ball_frozen").setValue(ball);
 }
@@ -144,8 +157,8 @@ void CheckpointPlugin::onLoad()
 	boolvar("cpt_debug", "If set, render debugging info", &debug);
 
 	boolvar("cpt_next_prev_when_frozen", "LEGACY; DO NOT USE", &ignorePNNotFrozen);
-	boolvar("cpt_ignore_next", "If set, ignore next when not frozen", &ignorePrev);
-	boolvar("cpt_ignore_prev", "If set, ignore prev when not frozen", &ignoreNext);
+	boolvar("cpt_ignore_next", "If set, ignore next when not frozen", &ignoreNext);
+	boolvar("cpt_ignore_prev", "If set, ignore prev when not frozen", &ignorePrev);
 	boolvar("cpt_ignore_freeze_ball", "If set, ignore freeze ball when not frozen", &ignoreFreezeBall);
 	boolvar("cpt_disable_training", "If set, disable in custom training", &disableTraining);
 	boolvar("cpt_disable_workshop", "If set, disable in workshop", &disableWorkshop);
@@ -181,7 +194,7 @@ void CheckpointPlugin::onLoad()
 	}
 
 	boolvar("cpt_mirror_loads", "If set, randomly mirror when loading checkpoints", &mirrorLoads);
-	boolvar("cpt_randomize_loads", "If set, load a random checkpoint instead of the latest", &randomizeLoads);
+	boolvar("cpt_randomize_loads", "If set, load a random checkpoint when entering replay mode", &randomizeLoads);
 
 	cvarManager->registerCvar("cpt_allow_delete_all", "0", "Enables the delete all button", false, true, 0, true, 1, false);
 
@@ -212,6 +225,7 @@ void CheckpointPlugin::onLoad()
 
 	auto filenameCV = cvarManager->registerCvar(
 		"cpt_filename", static_cast<std::string>(DEFAULT_SAVE_FILE_NAME), "Sets the filename to use for saved checkpoints", true, false, 0, false, 0, true);
+	cvarManager->registerCvar("cpt_category_shot_count", "0", "Number of shots in the selected checkpoint category", false);
 	filenameCV.addOnValueChanged([this](std::string old, CVarWrapper now) {
 		setFrozen(false, false);
 		curCheckpoint = 0;
@@ -240,11 +254,16 @@ void CheckpointPlugin::onLoad()
 	gameWrapper->HookEvent("Function PlayerController_TA.Driving.PlayerMove",
 		bind(&CheckpointPlugin::OnPreAsync, this, _1));
 
-	// Disable rewind mode if the user resets freeplay.
-	// Or load latest checkpoint if within N seconds.
+	// Ignore native Reset Shot while a checkpoint mode owns the action button.
+	// Otherwise, load the latest checkpoint if reset occurs within N seconds.
 	gameWrapper->HookEvent("Function GameEvent_TA.Countdown.BeginState",
 		[this](std::string eventName) {
 			if (!enabledLoads()) {
+				return;
+			}
+			if (rewindMode &&
+				(selectionMode == CheckpointSelectionMode::Saving ||
+				 selectionMode == CheckpointSelectionMode::Replaying)) {
 				return;
 			}
 			int resetDelay = cvarManager->getCvar("cpt_load_after_reset").getIntValue();
@@ -272,16 +291,23 @@ void CheckpointPlugin::onLoad()
 
 	// Enter rewind mode.
 	cvarManager->registerNotifier("cpt_freeze", [this](std::vector<std::string> command) {
-		if (!enabled() || history.size() == 0 || rewindMode || gameWrapper->IsInReplay()) {
+		if (!enabled()) {
 			return;
 		}
+		if (isViewingReplay()) {
+			replaySavingMode = !replaySavingMode;
+			return;
+		}
+		if (history.size() == 0 || rewindMode) {
+			return;
+		}
+		selectionMode = CheckpointSelectionMode::Saving;
 		latest = history.back();
 		loadGameState(latest, false);
-	}, "Activates rewind mode", PERMISSION_ALL);
+	}, "Activates checkpoint saving mode", PERMISSION_ALL);
 
-	// If in play mode, load the latest checkpoint / quick checkpoint.
-	// If in rewind mode, add a checkpoint or delete the current checkpoint.
-	cvarManager->registerNotifier("cpt_do_checkpoint", std::bind(&CheckpointPlugin::doCheckpoint, this, _1), "Saves/restores/removes a checkpoint", PERMISSION_ALL);
+	cvarManager->registerNotifier("cpt_replay_mode", std::bind(&CheckpointPlugin::enterReplayMode, this, _1), "Activates checkpoint replay mode", PERMISSION_ALL);
+	cvarManager->registerNotifier("cpt_do_checkpoint", std::bind(&CheckpointPlugin::doCheckpoint, this, _1), "Saves or removes a checkpoint in the active mode", PERMISSION_ALL);
 
 	cvarManager->registerNotifier("cpt_lock_checkpoint", std::bind(&CheckpointPlugin::lockCheckpoint, this, _1), "Lock/unlock a checkpoint", PERMISSION_FREEPLAY);
 	cvarManager->registerNotifier("cpt_prev_checkpoint", std::bind(&CheckpointPlugin::prevCheckpoint, this, _1), "Loads the previous checkpoint", PERMISSION_FREEPLAY);
@@ -303,7 +329,7 @@ void CheckpointPlugin::onLoad()
 }
 
 bool CheckpointPlugin::enabled() {
-	if (gameWrapper->IsInReplay()) {
+	if (isViewingReplay()) {
 		// Replays may be paused when checkpoints are taken.
 		return true;
 	}
@@ -320,6 +346,14 @@ bool CheckpointPlugin::enabled() {
 	return !disableWorkshop || PlaylistIds(gameWrapper->GetGameEventAsServer().GetPlaylist().GetPlaylistId()) != PlaylistIds::Workshop;
 }
 
+bool CheckpointPlugin::isViewingReplay() const {
+	if (gameWrapper->IsInReplay()) {
+		return true;
+	}
+	ReplayServerWrapper replayServer = gameWrapper->GetGameEventAsReplay();
+	return replayServer && replayServer.GetReplay();
+}
+
 bool CheckpointPlugin::enabledLoads() {
 	if (gameWrapper->IsPaused()) {
 		// Don't allow checkpoint operations while paused.
@@ -333,7 +367,7 @@ bool CheckpointPlugin::enabledLoads() {
 
 void CheckpointPlugin::copyShot(std::vector<std::string> command) {
 	std::string output = "";
-	if (gameWrapper->IsInReplay()) {
+	if (isViewingReplay()) {
 		std::unique_ptr<GameState> gs = getReplayGameState();
 		if (gs == nullptr) {
 			return;
@@ -400,6 +434,7 @@ void CheckpointPlugin::pasteShot(std::vector<std::string> command) {
 		return;
 	}
 	quickCheckpoint = GameState(input.substr(4, input.size() - 5));
+	selectionMode = CheckpointSelectionMode::Replaying;
 	loadGameState(quickCheckpoint);
 	hasQuickCheckpoint = true;
 	rewindState.justLoadedQuickCheckpoint = true;
@@ -410,7 +445,13 @@ void CheckpointPlugin::freezeBallUnfreezeCar(std::vector<std::string> command) {
 		return;
 	}
 	if (rewindMode) {
+		if (selectionMode != CheckpointSelectionMode::Replaying) {
+			return;
+		}
 		setFrozen(false, true);
+		return;
+	}
+	if (ignoreFreezeBall) {
 		return;
 	}
 	if (freezeBall) {
@@ -421,22 +462,19 @@ void CheckpointPlugin::freezeBallUnfreezeCar(std::vector<std::string> command) {
 		hasQuickCheckpoint = true;
 		return;
 	}
-	if (ignoreFreezeBall) {
-		return;
-	}
 	latest = history.back();
 	latest.apply(gameWrapper, false);
 	setFrozen(false, true);
 }
 
 void CheckpointPlugin::mirrorState(std::vector<std::string> command) {
-	if (!enabledLoads() || !rewindMode) {
+	if (!enabledLoads() || !rewindMode ||
+		selectionMode != CheckpointSelectionMode::Replaying) {
 		return;
 	}
-	rewindState.atCheckpoint = false;
-	hasQuickCheckpoint = true;
-	quickCheckpoint = latest.mirror();
-	loadLatestCheckpoint();
+	const bool atCheckpoint = rewindState.atCheckpoint;
+	loadGameState(latest.mirror());
+	rewindState.atCheckpoint = atCheckpoint;
 }
 
 void CheckpointPlugin::deleteAllCheckpoints(std::vector<std::string> command) {
@@ -645,19 +683,35 @@ void CheckpointPlugin::moveCheckpointToCategory(std::vector<std::string> command
 }
 
 void CheckpointPlugin::randCheckpoint(std::vector<std::string> command) {
-	if (!enabledLoads()) {
+	if (!enabledLoads() || rewindMode) {
 		return;
 	}
 	loadRandomCheckpoint();
 }
 
+void CheckpointPlugin::enterReplayMode(std::vector<std::string> command) {
+	if (!enabledLoads() || rewindMode || checkpoints.empty()) {
+		return;
+	}
+	selectionMode = CheckpointSelectionMode::Replaying;
+	if (randomizeLoads) {
+		loadRandomCheckpoint();
+		return;
+	}
+	loadCurCheckpoint();
+}
+
 void CheckpointPlugin::prevCheckpoint(std::vector<std::string> command) {
-	if (!enabledLoads() || checkpoints.size() == 0) {
+	if (!enabledLoads() || checkpoints.empty()) {
 		return;
 	}
-	if (ignorePrev && !rewindMode) {
+	if (rewindMode && selectionMode != CheckpointSelectionMode::Replaying) {
 		return;
 	}
+	if (!rewindMode && ignorePrev) {
+		return;
+	}
+	selectionMode = CheckpointSelectionMode::Replaying;
 	if (!rewindState.justDeletedCheckpoint) {
 		// If you just deleted a checkpoint, prev should go one prior to
 		// the deleted one (the current one).
@@ -671,12 +725,16 @@ void CheckpointPlugin::prevCheckpoint(std::vector<std::string> command) {
 }
 
 void CheckpointPlugin::nextCheckpoint(std::vector<std::string> command) {
-	if (!enabledLoads() || checkpoints.size() == 0) {
+	if (!enabledLoads() || checkpoints.empty()) {
 		return;
 	}
-	if (ignoreNext && !rewindMode) {
+	if (rewindMode && selectionMode != CheckpointSelectionMode::Replaying) {
 		return;
 	}
+	if (!rewindMode && ignoreNext) {
+		return;
+	}
+	selectionMode = CheckpointSelectionMode::Replaying;
 	curCheckpoint++;
 	if (curCheckpoint == checkpoints.size()) {
 		curCheckpoint = 0;
@@ -685,7 +743,8 @@ void CheckpointPlugin::nextCheckpoint(std::vector<std::string> command) {
 }
 
 void CheckpointPlugin::lockCheckpoint(std::vector<std::string> command) {
-	if (gameWrapper->IsPaused() || !rewindMode || !rewindState.atCheckpoint) {
+	if (gameWrapper->IsPaused() || !rewindMode || !rewindState.atCheckpoint ||
+		selectionMode != CheckpointSelectionMode::Replaying) {
 		return;
 	}
 	if (isAllCategory()) {
@@ -710,7 +769,10 @@ void CheckpointPlugin::doCheckpoint(std::vector<std::string> command) {
 		if (!enabled()) {
 			return;
 		}
-		if (gameWrapper->IsInReplay()) {
+		if (isViewingReplay()) {
+			if (!replaySavingMode) {
+				return;
+			}
 			if (isAllCategory()) {
 				cvarManager->log("Select a specific category before saving a checkpoint.");
 				return;
@@ -724,6 +786,7 @@ void CheckpointPlugin::doCheckpoint(std::vector<std::string> command) {
 			checkpointFiles.push_back(std::filesystem::path(cvarManager->getCvar("cpt_filename").getStringValue()).filename().string());
 			checkpointFileIndices.push_back(checkpoints.size() - 1);
 			saveCheckpointFile();
+			replaySavingMode = false;
 			return;
 		}
 		if (gameWrapper->IsInCustomTraining()) {
@@ -734,15 +797,13 @@ void CheckpointPlugin::doCheckpoint(std::vector<std::string> command) {
 			return;
 		}
 		if (!rewindMode) {
-			if (randomizeLoads) {
-				loadRandomCheckpoint();
-				return;
-			}
-			loadLatestCheckpoint();
 			return;
 		}
 		hasQuickCheckpoint = false;
-		if (rewindState.atCheckpoint) { // Delete the current checkpoint we are at.
+		if (selectionMode == CheckpointSelectionMode::Replaying) {
+			if (!rewindState.atCheckpoint) {
+				return;
+			}
 			if (isAllCategory()) {
 				cvarManager->log("Select a specific category before deleting a checkpoint.");
 				return;
@@ -772,7 +833,10 @@ void CheckpointPlugin::doCheckpoint(std::vector<std::string> command) {
 			saveCheckpointFile();
 			return;
 		}
-		// Add a new checkpoint here.
+		if (selectionMode != CheckpointSelectionMode::Saving ||
+			rewindState.atCheckpoint) {
+			return;
+		}
 		if (isAllCategory()) {
 			cvarManager->log("Select a specific category before saving a checkpoint.");
 			return;
@@ -804,6 +868,7 @@ void CheckpointPlugin::onUnload() {
 void CheckpointPlugin::loadLatestCheckpoint() {
 	if (hasQuickCheckpoint) {
 		log("loading quick checkpoint");
+		selectionMode = CheckpointSelectionMode::Replaying;
 		loadGameState(quickCheckpoint);
 		hasQuickCheckpoint = true;
 		rewindState.justLoadedQuickCheckpoint = true;
@@ -823,12 +888,14 @@ void CheckpointPlugin::loadRandomCheckpoint() {
 	if (checkpoints.size() == 0) {
 		return;
 	}
+	selectionMode = CheckpointSelectionMode::Replaying;
 	hasQuickCheckpoint = false;
 	curCheckpoint = rand() % checkpoints.size();
 	loadLatestCheckpoint();
 }
 
 void CheckpointPlugin::loadCurCheckpoint() {
+	selectionMode = CheckpointSelectionMode::Replaying;
 	auto checkpoint = checkpoints.at(curCheckpoint);
 	if (mirrorLoads && rand() % 2 == 0) {
 		checkpoint = checkpoint.mirror();
@@ -922,6 +989,7 @@ bool CheckpointPlugin::rewind(ServerWrapper sw) {
 		return false;  // Ignored whatever inputs may have happened to exit mode; do not apply state.
 	}
 	lastRewindTime = currentTime;
+	const bool allowPitchToExit = selectionMode != CheckpointSelectionMode::Saving;
 	int buttonsDown = (abs(ci.Throttle) > 0.1 ? 0x01 : 0) |
 		(abs(ci.Roll) > 0.1 ? 0x02 : 0) |
 		(ci.Handbrake ? 0x04 : 0) |
@@ -929,7 +997,9 @@ bool CheckpointPlugin::rewind(ServerWrapper sw) {
 		(ci.ActivateBoost ? 0x10 : 0) |
 		(ci.HoldingBoost ? 0x20 : 0) |
 		((rewindState.atCheckpoint || rewindState.justLoadedQuickCheckpoint) && abs(ci.Steer) >= .05 ? 0x40 : 0) |
-		((rewindState.atCheckpoint || rewindState.justLoadedQuickCheckpoint || abs(ci.Pitch) >= .7) && abs(ci.Pitch) >= .05 ? 0x80 : 0);
+		(allowPitchToExit &&
+			(rewindState.atCheckpoint || rewindState.justLoadedQuickCheckpoint || abs(ci.Pitch) >= .7) &&
+			abs(ci.Pitch) >= .05 ? 0x80 : 0);
 	// See if we should exit rewind mode due to input.
 	if (buttonsDown != 0) {
 		if ((buttonsDown > rewindState.buttonsDown && currentTime - lastRecordTime > 0.1f) ||
@@ -1066,58 +1136,10 @@ void show(CanvasWrapper canvas, Vector2 *loc, std::string s) {
 	loc->Y += 20;
 }
 
-void CheckpointPlugin::Render(CanvasWrapper canvas) {
-	if (!gameWrapper->IsInFreeplay()) {
-		return;
-	}
-	ServerWrapper sw = gameWrapper->GetGameEventAsServer();
-	if (sw.IsNull() ||
-		PlaylistIds(sw.GetPlaylist().GetPlaylistId()) == PlaylistIds::Workshop) {
-		return;
-	}
-	if (debug) {
-		canvas.SetColor('\xff', '\xff', '\xff', '\xdc');
-		auto screenSize = canvas.GetSize();
-		Vector2 loc = { (int)(screenSize.X * 0.08), (int)(screenSize.Y * 0.08) };
-		show(canvas, &loc, "rewindMode: " + std::to_string(rewindMode));
-		show(canvas, &loc, "atCheckpoint: " + std::to_string(rewindState.atCheckpoint));
-		show(canvas, &loc, "justDeletedCheckpoint: " + std::to_string(rewindState.justDeletedCheckpoint));
-		show(canvas, &loc, "justLoadedQuickCheckpoint: " + std::to_string(rewindState.justLoadedQuickCheckpoint));
-		show(canvas, &loc, "hasQuickCheckpoint: " + std::to_string(hasQuickCheckpoint));
-		show(canvas, &loc, "virtualTimeOffset: " + std::to_string(rewindState.virtualTimeOffset));
-		show(canvas, &loc, "buttonsDown: " + std::to_string(rewindState.buttonsDown));
-		size_t current = std::clamp<size_t>(
-			history.size() + size_t(ceil(rewindState.virtualTimeOffset / snapshotInterval)),
-			0, history.size() - 1);
-		show(canvas, &loc, "current: " + std::to_string(current));
-	}
-	if (!rewindMode) {
-		return;
-	}
-	auto keyName = [this](const std::string& cvar) {
-		return friendlyKeyName(cvarManager->getCvar(cvar).getStringValue());
-	};
-	const std::string checkpointKey = keyName("cpt_do_checkpoint_key");
-	std::vector<std::pair<std::string, float>> controls = {
-		{ "CHECKPOINT SAVING", 1.75f },
-		{ "Steer Left / Right: Rewind / Fast Forward", 1.25f },
-		{ checkpointKey + ": Save New Checkpoint", 1.25f },
-		{ checkpointKey + " twice: Delete Current Checkpoint", 1.25f },
-	};
-	if (isAllCategory()) {
-		controls.push_back({ "All Categories is read-only", 1.25f });
-	}
-	controls.push_back({ "", 0.75f });
-	controls.push_back({ "CHECKPOINT REPLAYING", 1.75f });
-	controls.push_back({
-		keyName("cpt_prev_checkpoint_key") + " / " +
-		keyName("cpt_next_checkpoint_key") + ": Previous / Next Checkpoint",
-		1.25f
-	});
-	controls.push_back({ keyName("cpt_freeze_ball_key") + ": Unfreeze Car / Freeze Ball", 1.25f });
-	controls.push_back({ keyName("cpt_mirror_state_key") + ": Mirror Shot", 1.25f });
-	controls.push_back({ "Throttle / Jump / Boost: Replay Selected State", 1.25f });
-
+void drawControlPanel(
+	CanvasWrapper canvas,
+	const std::vector<std::pair<std::string, float>>& controls,
+	Vector2 panelPosition) {
 	float panelWidth = 0;
 	float panelHeight = 16;
 	for (const auto& control : controls) {
@@ -1125,11 +1147,6 @@ void CheckpointPlugin::Render(CanvasWrapper canvas) {
 		panelWidth = std::max(panelWidth, size.X);
 		panelHeight += size.Y + 4;
 	}
-	const auto screenSize = canvas.GetSize();
-	Vector2 panelPosition = {
-		static_cast<int>(screenSize.X * 0.04),
-		static_cast<int>(screenSize.Y * (debug ? 0.42 : 0.22))
-	};
 	canvas.SetPosition(panelPosition);
 	canvas.SetColor(0, 0, 0, static_cast<char>(150));
 	canvas.FillBox(Vector2{
@@ -1144,6 +1161,114 @@ void CheckpointPlugin::Render(CanvasWrapper canvas) {
 		textPosition.Y += static_cast<int>(
 			canvas.GetStringSize(control.first, control.second, control.second).Y + 4);
 	}
+}
+
+void CheckpointPlugin::Render(CanvasWrapper canvas) {
+	auto keyName = [this](const std::string& cvar) {
+		return friendlyKeyName(cvarManager->getCvar(cvar).getStringValue());
+	};
+	if (isViewingReplay()) {
+		const std::string selectedCategory = categoryNameFromFilename(
+			cvarManager->getCvar("cpt_filename").getStringValue());
+		const std::string freezeKey = keyName("cpt_freeze_key");
+		const std::string checkpointKey = keyName("cpt_do_checkpoint_key");
+		std::vector<std::pair<std::string, float>> controls = {
+			{ replaySavingMode ? "REPLAY SAVING MODE" : "REPLAY CHECKPOINT SAVING", 1.75f },
+			{ "CATEGORY: " + selectedCategory, replaySavingMode ? 1.5f : 1.25f },
+		};
+		if (replaySavingMode) {
+			controls.push_back({ freezeKey + ": Exit Replay Saving Mode", 1.25f });
+			if (isAllCategory()) {
+				controls.push_back({ "All Categories is read-only; select a category to save", 1.25f });
+			} else {
+				controls.push_back({ checkpointKey + ": Save Current Replay Frame", 1.25f });
+			}
+		} else {
+			controls.push_back({ freezeKey + ": Enter Replay Saving Mode", 1.25f });
+		}
+		controls.push_back({ "Replay, navigation, rewind, and fast-forward controls are disabled", 1.25f });
+		const auto screenSize = canvas.GetSize();
+		drawControlPanel(canvas, controls, Vector2{
+			static_cast<int>(screenSize.X * 0.04),
+			static_cast<int>(screenSize.Y * 0.22)
+		});
+		return;
+	}
+	replaySavingMode = false;
+	if (!gameWrapper->IsInFreeplay()) {
+		return;
+	}
+	ServerWrapper sw = gameWrapper->GetGameEventAsServer();
+	if (sw.IsNull() ||
+		PlaylistIds(sw.GetPlaylist().GetPlaylistId()) == PlaylistIds::Workshop) {
+		return;
+	}
+	if (debug) {
+		canvas.SetColor('\xff', '\xff', '\xff', '\xdc');
+		auto screenSize = canvas.GetSize();
+		Vector2 loc = { (int)(screenSize.X * 0.08), (int)(screenSize.Y * 0.08) };
+		show(canvas, &loc, "rewindMode: " + std::to_string(rewindMode));
+		show(canvas, &loc, "selectionMode: " + std::to_string(static_cast<int>(selectionMode)));
+		show(canvas, &loc, "atCheckpoint: " + std::to_string(rewindState.atCheckpoint));
+		show(canvas, &loc, "justDeletedCheckpoint: " + std::to_string(rewindState.justDeletedCheckpoint));
+		show(canvas, &loc, "justLoadedQuickCheckpoint: " + std::to_string(rewindState.justLoadedQuickCheckpoint));
+		show(canvas, &loc, "hasQuickCheckpoint: " + std::to_string(hasQuickCheckpoint));
+		show(canvas, &loc, "virtualTimeOffset: " + std::to_string(rewindState.virtualTimeOffset));
+		show(canvas, &loc, "buttonsDown: " + std::to_string(rewindState.buttonsDown));
+		size_t current = std::clamp<size_t>(
+			history.size() + size_t(ceil(rewindState.virtualTimeOffset / snapshotInterval)),
+			0, history.size() - 1);
+		show(canvas, &loc, "current: " + std::to_string(current));
+	}
+	if (!rewindMode) {
+		return;
+	}
+	const std::string freezeKey = keyName("cpt_freeze_key");
+	const std::string replayKey = keyName("cpt_replay_mode_key");
+	const std::string checkpointKey = keyName("cpt_do_checkpoint_key");
+	std::vector<std::pair<std::string, float>> controls;
+	if (selectionMode == CheckpointSelectionMode::Saving) {
+		const std::string saveAction = rewindState.atCheckpoint
+			? "Checkpoint Saved - Resume Driving"
+			: checkpointKey + ": Save New Checkpoint";
+		controls = {
+			{ "CHECKPOINT SAVING MODE", 1.75f },
+			{ "CATEGORY: " + categoryNameFromFilename(
+				cvarManager->getCvar("cpt_filename").getStringValue()), 1.5f },
+			{ freezeKey + ": Saving Mode Active", 1.25f },
+			{ "Steer Left / Right: Rewind / Fast Forward", 1.25f },
+			{ "Stick Up / Down: Disabled", 1.25f },
+			{ saveAction, 1.25f },
+			{ "Replay, navigation, and delete controls are disabled", 1.25f },
+		};
+		if (isAllCategory()) {
+			controls.push_back({ "All Categories is read-only", 1.25f });
+		}
+	} else {
+		controls = {
+			{ "CHECKPOINT REPLAY MODE", 1.75f },
+			{ replayKey + ": Replay Mode Active", 1.25f },
+			{ checkpointKey + " twice: Delete Current Checkpoint", 1.25f },
+			{
+				keyName("cpt_prev_checkpoint_key") + " / " +
+				keyName("cpt_next_checkpoint_key") + ": Previous / Next Checkpoint",
+				1.25f
+			},
+			{ keyName("cpt_freeze_ball_key") + ": Unfreeze Car / Freeze Ball", 1.25f },
+			{ keyName("cpt_mirror_state_key") + ": Mirror Shot", 1.25f },
+			{ "Throttle / Jump / Boost: Replay Selected State", 1.25f },
+		};
+		if (isAllCategory()) {
+			controls.push_back({ "Select a category before deleting", 1.25f });
+		}
+	}
+
+	const auto screenSize = canvas.GetSize();
+	Vector2 panelPosition = {
+		static_cast<int>(screenSize.X * 0.04),
+		static_cast<int>(screenSize.Y * (debug ? 0.42 : 0.22))
+	};
+	drawControlPanel(canvas, controls, panelPosition);
 
 	if (rewindState.deleting) {
 		Vector2 loc = { (int)(screenSize.X * 0.80), (int)(screenSize.Y * 0.08) };
@@ -1243,6 +1368,10 @@ bool CheckpointPlugin::isAllCategory() const {
 	return cvarManager->getCvar("cpt_filename").getStringValue() == ALL_CATEGORIES_VALUE;
 }
 
+void CheckpointPlugin::updateCategoryShotCount() {
+	cvarManager->getCvar("cpt_category_shot_count").setValue(std::to_string(checkpoints.size()));
+}
+
 void CheckpointPlugin::loadCheckpointFile() {
 	checkpoints.clear();
 	locks.clear();
@@ -1267,6 +1396,7 @@ void CheckpointPlugin::loadCheckpointFile() {
 				checkpointFileIndices.push_back(i);
 			}
 		}
+		updateCategoryShotCount();
 		return;
 	}
 
@@ -1275,16 +1405,19 @@ void CheckpointPlugin::loadCheckpointFile() {
 	const auto path = gameWrapper->GetDataFolder() / cvarManager->getCvar("cpt_filename").getStringValue();
 	if (!std::filesystem::exists(path)) {
 		log("save file does not exist yet");
+		updateCategoryShotCount();
 		return;
 	}
 	if (!readCheckpointFile(path, checkpoints, locks)) {
 		cvarManager->log("Could not load checkpoint category " + getCategoryName() + ".");
+		updateCategoryShotCount();
 		return;
 	}
 	for (size_t i = 0; i < checkpoints.size(); i++) {
 		checkpointFiles.push_back(filename);
 		checkpointFileIndices.push_back(i);
 	}
+	updateCategoryShotCount();
 }
 
 bool CheckpointPlugin::readCheckpointFile(
@@ -1342,6 +1475,7 @@ void CheckpointPlugin::saveCheckpointFile() {
 	if (!writeCheckpointFile(path, checkpoints, locks)) {
 		cvarManager->log("Could not save checkpoint category " + getCategoryName() + ".");
 	}
+	updateCategoryShotCount();
 }
 
 bool CheckpointPlugin::writeCheckpointFile(

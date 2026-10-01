@@ -12,16 +12,30 @@ This version extends the original Freeplay Checkpoint implementation with:
   - Start each replay with a custom boost percentage.
 - **Checkpoint categories**:
   - Create and select named categories backed by separate checkpoint files.
+  - See the number of shots in the selected category directly in plugin settings.
   - Move individual checkpoints between categories while preserving their lock state.
   - Delete a category while safely moving all of its checkpoints to **Default**.
   - Browse and replay every saved checkpoint through the virtual, read-only **All**
     category.
-- **Improved Freeplay overlays**:
+- **Dedicated checkpoint modes**:
+  - Use **R3** for checkpoint saving and **L3** for checkpoint replay selection.
+  - Keep navigation, mirroring, locking, and deletion disabled while saving.
+  - Ignore vertical stick movement while rewinding so accidental input does not
+    exit Saving Mode.
+  - Suppress Rocket League's native Reset Shot while a checkpoint mode owns the
+    shared action button.
+- **Improved Freeplay and replay overlays**:
   - Display the source category and current checkpoint counter without overflowing
     the screen.
-  - Show separate **Checkpoint Saving** and **Checkpoint Replaying** control references
+  - Show separate **Checkpoint Saving** and **Checkpoint Replay** control references
     using the configured controller bindings.
-  - Keep checkpoint overlays hidden outside standard Freeplay.
+  - Show the selected category and replay-saving controls while viewing a replay.
+  - Keep checkpoint overlays hidden outside standard Freeplay and Rocket League replays.
+- **Replay checkpoint capture**:
+  - Enter Replay Saving Mode with **R3** and save the current replay frame to the
+    selected category.
+  - Disable checkpoint playback, navigation, deletion, and plugin rewind controls
+    while viewing a replay.
 - **Simplified local development**:
   - Build, install, and reload the plugin using the included `build.ps1` script.
 
@@ -31,7 +45,7 @@ This version extends the original Freeplay Checkpoint implementation with:
 2. Click "Plugins"
 3. Find "Freeplay Checkpoint" in the plugin list on the left.
 4. Optional: choose new button bindings.
-5. Click "Apply Bindings"
+5. Click **Apply All Bindings**, especially after upgrading or changing a binding.
 
 Alternatively, or for KBM users: assign the `cpt_` commands (listed in the Command
 Reference section below) as desired in the "Bindings" tab.
@@ -53,32 +67,59 @@ patcher, which installs and reloads the plugin.
 
 Note: assumes default bindings from above.
 
-1. Start freeplay mode.  Set up a shot.
-2. Enter rewind mode by pressing the right thumb stick.
-3. Steer left/right to rewind/advance time.
-   - While selecting a checkpoint, an on-screen panel shows the current mode and
-     a quick reference using your configured controller bindings.
-4. When you find a point in time to save, press the Back (or Select or Share) button.
-5. Resume driving.
-6. Press Back again to return to that checkpoint.
-7. Press Back (twice) on a currently frozen checkpoint to delete it.
-8. Press left/right on the dpad to navigate between multiple saved checkpoints.
+1. Start freeplay mode. Set up a shot.
+2. Press **Right Stick (R3)** to enter **Checkpoint Saving Mode**.
+3. Steer left/right to rewind/advance time, then press **Back / Select / Share**
+   to save the selected state.
+   - Vertical stick movement is ignored so accidental up/down input cannot exit
+     Saving Mode while rewinding.
+   - Replay navigation, mirroring, and deletion are disabled in Saving Mode.
+4. Resume driving, then press **Left Stick (L3)** to enter **Checkpoint Replay Mode**
+   and load the current saved checkpoint.
+   - D-pad left/right also enter Replay Mode unless their **Ignore While Playing**
+     options are enabled.
+5. In Replay Mode:
+   - Press left/right on the d-pad to change checkpoints.
+   - Press down on the d-pad to mirror the selected checkpoint.
+   - Press up on the d-pad to unfreeze the car while keeping the ball frozen.
+   - Press **Back / Select / Share** twice to delete the selected checkpoint.
+   - Use throttle, jump, or boost to leave Replay Mode and play the shot.
+
+**Saving Checkpoints from a Replay:**
+
+1. Open a Rocket League replay and use the game's replay controls to choose a frame.
+2. Press **Right Stick (R3)** to enter **Replay Saving Mode**.
+3. Confirm the selected checkpoint category in the on-screen panel.
+4. Press **Back / Select / Share** to save the current replay frame.
+
+Only Replay Saving Mode and its save action are available in a replay. L3, checkpoint
+navigation, mirroring, deletion, and the plugin's rewind/fast-forward controls remain
+disabled. Press R3 again to cancel Replay Saving Mode without saving.
+
+**In-Game Controller Bindings Tip:**
+Rocket League may assign **R3**, **L3**, or **Select / Back / Share** to another
+Freeplay action. Native **Reset Shot** events are ignored while Checkpoint Saving
+Mode or Checkpoint Replay Mode is active, so sharing the checkpoint action button
+does not exit the active mode. Other conflicting native actions may still need to
+be moved in **Options -> Controls -> View/Change Bindings**.
 
 **Command Reference:**
 
-- `cpt_freeze`: activates rewind mode in Freeplay or Custom Training
+- `cpt_freeze`: activates Checkpoint Saving Mode in Freeplay or toggles Replay
+  Saving Mode while viewing a replay
+- `cpt_replay_mode`: activates Checkpoint Replay Mode and loads the current checkpoint
 - `cpt_do_checkpoint`:
-  - In rewind mode, not at a saved checkpoint: saves the current state as a checkpoint
-  - In rewind mode, at a saved checkpoint: deletes the current checkpoint (press twice)
-  - While playing: loads the latest checkpoint
-  - In a replay, saves the currently selected car & ball as a checkpoint
-- `cpt_prev_checkpoint` / `cpt_next_checkpoint`: loads the previous/next saved checkpoint
+  - In Saving Mode: saves the selected state as a checkpoint
+  - In Replay Mode: deletes the current checkpoint (press twice)
+  - In a Rocket League replay: saves the currently selected car and ball only
+    while Replay Saving Mode is active
+- `cpt_prev_checkpoint` / `cpt_next_checkpoint`: loads the previous/next checkpoint
+  while in Replay Mode
 - `cpt_rand_checkpoint`: loads a random saved checkpoint
 - `cpt_lock_checkpoint`: locks/unlocks the current checkpoint to prevent/allow its deletion.
-- `cpt_mirror_state`: when frozen, mirrors car and ball to opposide side of field.
+- `cpt_mirror_state`: mirrors the selected shot while in Replay Mode.
 - `cpt_freeze_ball`:
-  - In rewind mode: unfreezes the player's car while keeping the ball frozen
-  - While playing: freezes the ball without freezing the player's car
+  - In Replay Mode: unfreezes the player's car while keeping the ball frozen
 - `cpt_copy`\*:
   - In rewind mode: copy the current state to the clipboard
   - While playing: copy the last loaded checkpoint or quick checkpoint to the clipboard
@@ -93,9 +134,12 @@ Note: assumes default bindings from above.
   - KBM players should manually bind the cpt_ keys in the bindings section.
   - Controller players may hold the button they wish to bind and click the action they
     wish to bind to that button.
-  - Recommended: Do *not* bind cpt_checkpoint to the same button as "reset shot".
-  - Ignore prev/next/freeze ball when not frozen (recommended):
-    - Avoids interfering with bakkesmod default commands.
+  - Saving Mode defaults to **R3** and Replay Mode defaults to **L3**.
+  - **Ignore While Playing** can disable previous, next, and freeze-ball actions
+    until a mode is active.
+  - Previous and next enter Replay Mode when used while playing unless ignored.
+  - Replay controls are always disabled while Saving Mode is active.
+  - Do *not* bind plugin actions to conflicting Rocket League controls.
   - Disable binds in custom training: ignore commands in custom training
   - Disable binds in workshop: ignore commands on workshop maps
   - Reset button loads last checkpoint instead of resetting:
@@ -106,8 +150,7 @@ Note: assumes default bindings from above.
   - **Randomly mirror when loading checkpoint**:
     - Randomly mirrors shots when loading to practice opposite angles.
   - **Load random checkpoint**:
-    - When not frozen and `cpt_do_checkpoint` is pressed, load a random checkpoint instead
-      of the latest one.
+    - When Replay Mode starts, load a random checkpoint instead of the current one.
 - **Auto-reset checkpoint**:
   - Allows drilling a shot or running through shots like a training pack.
 - **Other Options**:
@@ -124,6 +167,8 @@ Note: assumes default bindings from above.
       currently selected shot, including its locked state, into another category.
     - The existing `cpt_filename` value remains compatible when upgrading.
     - The active category is displayed beside the current checkpoint number.
+    - Plugin settings show the number of shots in the selected category or combined
+      **All** view.
   - **Boost when loading checkpoint**:
     - **Saved at checkpoint** restores the boost amount captured with the checkpoint.
     - **Unlimited** keeps boost full while playing from the checkpoint.

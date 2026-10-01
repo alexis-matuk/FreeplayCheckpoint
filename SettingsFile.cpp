@@ -14,12 +14,18 @@ void CheckpointPlugin::writeSettingsFile() {
 	setFile << R"(Freeplay Checkpoint
 9|Bindings
 9|Instructions: Enter Freeplay, HOLD button you wish to assign and click desired action button
+9|Defaults: Saving Mode = Right Stick (R3), Replay Mode = Left Stick (L3).
+9|Checkpoint Action = Back / Select / Share.
+9|Rocket League's Reset Shot is suppressed while Saving or Replay Mode is active.
 9|KBM players: bind cpt_ commands manually in Bakkesmod Bindings tab
 8|
-0|                  Freeze (cpt_freeze)                  |cpt_capture_key cpt_freeze
+0|       Saving Mode (cpt_freeze)       |cpt_capture_key cpt_freeze
 7|
 9| [ $cpt_freeze_key$ ]
-0|         Checkpoint (cpt_do_checkpoint)       |cpt_capture_key cpt_do_checkpoint
+0| Replay Mode (cpt_replay_mode) |cpt_capture_key cpt_replay_mode
+7|
+9| [ $cpt_replay_mode_key$ ]
+0|Checkpoint Action (cpt_do_checkpoint)|cpt_capture_key cpt_do_checkpoint
 7|
 9| [ $cpt_do_checkpoint_key$ ]
 0|  Prev. Checkpoint (cpt_prev_checkpoint) |cpt_capture_key cpt_prev_checkpoint
@@ -37,6 +43,8 @@ void CheckpointPlugin::writeSettingsFile() {
 9| [ $cpt_freeze_ball_key$ ]
 7|
 1|Ignore While Playing##fb|cpt_ignore_freeze_ball
+9|Previous and next enter Replay Mode while playing unless ignored above.
+9|All replay controls remain disabled in Saving Mode.
 9|
 0|          Mirror shot (cpt_mirror_state)          |cpt_capture_key cpt_mirror_state
 7|
@@ -47,7 +55,7 @@ void CheckpointPlugin::writeSettingsFile() {
 9|
 0|  Apply All Bindings  |cpt_apply_bindings
 7|
-9|(if bindings have never been set)
+9|(after updating or changing bindings)
 7|
 0| Remove Bindings  |cpt_remove_bindings
 7|
@@ -75,7 +83,7 @@ void CheckpointPlugin::writeSettingsFile() {
 5|Max. Total Variance|cpt_variance_tot|0|50
 9|
 1|Randomly mirror when loading checkpoint|cpt_mirror_loads
-1|Load random checkpoint instead of latest|cpt_randomize_loads
+1|Load random checkpoint when entering Replay Mode|cpt_randomize_loads
 8|
 9|
 9|Auto-reset checkpoint - reset when the following occurs:
@@ -90,7 +98,8 @@ void CheckpointPlugin::writeSettingsFile() {
 9|Checkpoint Categories:
 )";
 	setFile << "6|Current Category|cpt_filename|" << getCategoryOptions() << "\n";
-	setFile << R"(12|New Category Name|cpt_new_category
+	setFile << R"(9|Shots in selected pack: $cpt_category_shot_count$
+12|New Category Name|cpt_new_category
 7|
 0|Create and Select Category|cpt_create_category
 9|

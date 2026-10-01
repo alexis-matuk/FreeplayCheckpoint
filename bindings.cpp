@@ -15,6 +15,7 @@ using namespace std::placeholders;
 
 void CheckpointPlugin::removeBindKeys(std::vector<std::string> params) {
 	removeBind(cvarManager->getCvar("cpt_freeze_key").getStringValue(), "cpt_freeze");
+	removeBind(cvarManager->getCvar("cpt_replay_mode_key").getStringValue(), "cpt_replay_mode");
 	removeBind(cvarManager->getCvar("cpt_do_checkpoint_key").getStringValue(), "cpt_do_checkpoint");
 	removeBind(cvarManager->getCvar("cpt_prev_checkpoint_key").getStringValue(), "cpt_prev_checkpoint");
 	removeBind(cvarManager->getCvar("cpt_next_checkpoint_key").getStringValue(), "cpt_next_checkpoint");
@@ -24,6 +25,7 @@ void CheckpointPlugin::removeBindKeys(std::vector<std::string> params) {
 
 void CheckpointPlugin::applyBindKeys(std::vector<std::string> params) {
 	addBind(cvarManager->getCvar("cpt_freeze_key").getStringValue(), "cpt_freeze");
+	addBind(cvarManager->getCvar("cpt_replay_mode_key").getStringValue(), "cpt_replay_mode");
 	addBind(cvarManager->getCvar("cpt_do_checkpoint_key").getStringValue(), "cpt_do_checkpoint");
 	addBind(cvarManager->getCvar("cpt_prev_checkpoint_key").getStringValue(), "cpt_prev_checkpoint");
 	addBind(cvarManager->getCvar("cpt_next_checkpoint_key").getStringValue(), "cpt_next_checkpoint");
@@ -33,6 +35,7 @@ void CheckpointPlugin::applyBindKeys(std::vector<std::string> params) {
 
 void CheckpointPlugin::resetDefaultBindKeys(std::vector<std::string> params) {
 	cvarManager->getCvar("cpt_freeze_key").setValue("XboxTypeS_RightThumbStick");
+	cvarManager->getCvar("cpt_replay_mode_key").setValue("XboxTypeS_LeftThumbStick");
 	cvarManager->getCvar("cpt_do_checkpoint_key").setValue("XboxTypeS_Back");
 	cvarManager->getCvar("cpt_prev_checkpoint_key").setValue("XboxTypeS_DPad_Left");
 	cvarManager->getCvar("cpt_next_checkpoint_key").setValue("XboxTypeS_DPad_Right");
@@ -46,7 +49,10 @@ static const std::vector<std::string> KEY_LIST = {
 	"XboxTypeS_Back", "XboxTypeS_DPad_Up", "XboxTypeS_DPad_Left", "XboxTypeS_DPad_Right", "XboxTypeS_DPad_Down" };
 
 void CheckpointPlugin::registerBindingCVars() {
-	cvarManager->registerCvar("cpt_freeze_key", "XboxTypeS_RightThumbStick", "Key to bind cpt_freeze to on cpt_apply_bindings");
+	cvarManager->registerCvar("cpt_freeze_key", "XboxTypeS_RightThumbStick", "Key to bind checkpoint saving mode to on cpt_apply_bindings");
+	cvarManager->registerCvar("cpt_replay_mode_key", "XboxTypeS_LeftThumbStick", "Key to bind checkpoint replay mode to on cpt_apply_bindings");
+	auto replayBindingInitialized = cvarManager->registerCvar(
+		"cpt_replay_mode_binding_initialized", "0", "Tracks migration of the replay mode binding", true);
 	cvarManager->registerCvar("cpt_do_checkpoint_key", "XboxTypeS_Back", "Key to bind cpt_do_checkpoint to on cpt_apply_bindings");
 	cvarManager->registerCvar("cpt_prev_checkpoint_key", "XboxTypeS_DPad_Left", "Key to bind cpt_prev_checkpoint to on cpt_apply_bindings");
 	cvarManager->registerCvar("cpt_next_checkpoint_key", "XboxTypeS_DPad_Right", "Key to bind cpt_next_checkpoint to on cpt_apply_bindings");
@@ -60,6 +66,10 @@ void CheckpointPlugin::registerBindingCVars() {
 		"Resets bindings to the default values", PERMISSION_ALL);
 	cvarManager->registerNotifier("cpt_capture_key", bind(&CheckpointPlugin::captureBindKey, this, _1),
 		"Captures currently pressed key and stores in parameter (cvar)", PERMISSION_ALL);
+	if (!replayBindingInitialized.getBoolValue()) {
+		addBind(cvarManager->getCvar("cpt_replay_mode_key").getStringValue(), "cpt_replay_mode");
+		replayBindingInitialized.setValue("1");
+	}
 }
 
 

@@ -55,10 +55,17 @@ enum class CheckpointBoostMode {
 	Custom,
 };
 
+enum class CheckpointSelectionMode {
+	None,
+	Saving,
+	Replaying,
+};
+
 class CheckpointPlugin : public BakkesMod::Plugin::BakkesModPlugin {
 	//Boilerplate
 	virtual void onLoad();
 	void copyShot(std::vector<std::string> command);
+	void enterReplayMode(std::vector<std::string> command);
 	void mirrorState(std::vector<std::string> command);
 	void deleteAllCheckpoints(std::vector<std::string> command);
 	void randCheckpoint(std::vector<std::string> command);
@@ -93,6 +100,8 @@ private:
 	int carNum = 0;
 	bool playingFromCheckpoint = false;
 	bool checkpointBoostActive = false;
+	CheckpointSelectionMode selectionMode = CheckpointSelectionMode::None;
+	bool replaySavingMode = false;
 
 	// Settings:
 	bool deleteFutureHistory = false;
@@ -136,6 +145,7 @@ private:
 	std::set<std::string> getCategoryFilenames() const;
 	std::string getCategoryName() const;
 	std::string getCategoryOptions(bool includeAll = true) const;
+	void updateCategoryShotCount();
 	bool isAllCategory() const;
 	void Render(CanvasWrapper canvas);
 	void record(ServerWrapper sw);
@@ -150,6 +160,7 @@ private:
 	std::unique_ptr<GameState> getReplayGameState();
 	void setFrozen(bool car, bool ball);
 	void writeSettingsFile();
+	bool isViewingReplay() const;
 	bool enabled();
 	bool enabledLoads();
 };
